@@ -1,0 +1,16 @@
+.local/
+__pycache__/
+*-auth.png
+oa-login*.png
+oa-direct.png
+node_modules/
+build/
+dist/
+.codex/
+artifacts/
+.venv/
+.env
+.env.*
+*.py[cod]
+*.log
+.DS_Store

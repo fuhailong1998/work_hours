@@ -1,0 +1,11 @@
+{
+  "name": "hours-workbench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tailwindcss -i web/src/styles.css -o web/static/styles.css --minify && esbuild web/src/app.js --bundle --minify --format=esm --outfile=web/static/app.js",
+    "start": "python3 server.py"
+  },
+  "dependencies": {"lucide": "^0.468.0"},
+  "devDependencies": {"@tailwindcss/cli": "^4.1.0", "tailwindcss": "^4.1.0", "esbuild": "^0.25.0"}
+}
