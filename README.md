@@ -4,18 +4,25 @@
 
 ## 单文件运行（推荐分发）
 
-构建产物为 `dist/work_hours`，当前构建适用于 Linux x86_64，已在 Ubuntu 24.04 / WSL 环境验证。将这一个文件复制给同事即可，无需安装 Python、Node、lark-cli 或 Chrome：
+按操作系统选择对应的单文件程序。将文件复制给同事即可，无需安装 Python、Node 或 lark-cli：
+
+| 系统 | 文件 | 启动方式 |
+| --- | --- | --- |
+| Windows x64 | `dist/work_hours.exe` | 双击，或在 PowerShell 执行 `.\work_hours.exe` |
+| Linux x86_64 / WSL | `dist/work_hours` | 终端执行以下命令 |
 
 ```bash
 chmod +x work_hours
 ./work_hours
 ```
 
-打开终端显示的 `http://127.0.0.1:18767/`，用自己的飞书扫码。停止程序按 Ctrl+C。端口已占用时可运行 `./work_hours --port 18768`。
+启动后保持终端窗口开启，用 Chrome、Edge 等浏览器打开 `http://127.0.0.1:18767/`，再用自己的飞书扫码。停止程序按 Ctrl+C。端口已占用时，Windows 可执行 `.\work_hours.exe --port 18768`，Linux 执行 `./work_hours --port 18768`。
 
-安装包只包含程序、网页和节假日数据，不包含打包者的账号、会话、工时或草稿。Linux 个人数据默认保存至 `~/.local/share/work_hours/`（遵循 `XDG_DATA_HOME`），升级时替换可执行文件即可；也可用 `WORK_HOURS_DATA_DIR` 指定数据目录。每个人使用独立副本和自己的账号，仍需能访问公司 OA 网络。
+安装包只包含程序、网页和节假日数据，不包含打包者的账号、会话、工时或草稿。Windows 个人数据默认保存至 `%LOCALAPPDATA%\work_hours\`，Linux 保存至 `~/.local/share/work_hours/`（遵循 `XDG_DATA_HOME`）。升级时替换可执行文件即可；也可用 `WORK_HOURS_DATA_DIR` 指定数据目录。每个人使用独立副本和自己的账号，仍需能访问公司 OA 网络。
 
-此文件不能直接在 Windows 原生或 macOS 上运行；不同操作系统需在对应平台构建。重新构建 Linux 版本执行 `./scripts/build_binary.sh`；构建机需要 Python、Node，使用者不需要。验证独立程序：`python tests/check_binary.py`（该检查会通过 HTTP 生成未扫描的测试二维码，不保存 OA 草稿）。
+不同操作系统需在对应平台构建，Linux 文件不能直接当作 Windows 程序运行。构建机需要 Python 3.11+ 和 Node.js 20+，使用者不需要。Windows 在项目目录执行 `python scripts/build_binary.py`；Linux 执行 `./scripts/build_binary.sh`。构建会使用独立虚拟环境，并将 Windows 所需的时区数据一起打包。
+
+离线验证：`python tests/check_binary_offline.py dist/work_hours.exe`（Linux 将文件名改为 `dist/work_hours`），检查独立启动、中文配置、时区和重启，不连接 OA。追加 `--check-qr` 还会通过 HTTP 生成未扫描的测试二维码，不保存 OA 草稿。
 
 ## 运行
 
@@ -26,7 +33,9 @@ python3 server.py
 
 打开 http://127.0.0.1:18767/ 。运行时仅使用 HTTP 接口，无需 Chrome、Playwright、CDP 或远程调试端口。需要访问公司 OA 的网络环境；HTTP 客户端遵循 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 配置，不能在需要代理的环境中禁用代理。
 
-网页首次打开会查询当前自然月份的工时周期。周期为上月 25 日至本月 24 日：9 月 29 日默认查询九月周期（8 月 25 日至 9 月 24 日）。日期按钮支持选择周期月份和自定义日期。
+网页首次打开会查询当前自然月份的工时周期。周期为上月 25 日至本月 24 日：9 月 29 日默认查询九月周期（8 月 25 日至 9 月 24 日）。页面顶部可直接选择历史月份、切换前后周期、回到本月或自定义日期；选择月份后自动查询。
+
+登录二维码显示预计 60 秒的过期倒计时，最后 15 秒提醒，到期后可点击“刷新二维码”。该时长来自实测，实际失效以飞书返回状态为准；已扫码后会等待手机确认，不受此倒计时中断。
 
 登录过期时点击「扫码登录 OA」。后端通过飞书 HTTP 接口生成二维码和轮询授权，登录完成后核对 OA 员工身份。Windows Chrome 内的 OA 登录态不自动共享到工作台。若飞书要求额外账号选择、二次验证或新的授权步骤，页面会明确提示，不会回退到浏览器自动化。
 
@@ -60,4 +69,4 @@ node tests/check_hours_cycle.mjs
 
 多选来源时按日汇总可调量；部分调出按当天各来源余额比例分摊，采用最大余数法保留到 0.01 小时。预览列出每个来源的调出明细，保存前重新核验来源余额与分摊结果。
 
-首次使用时没有预设员工身份。飞书扫码后，工作台通过 OA 身份接口和申请人联动自动识别姓名、部门、员工 ID 与工号；新账号需在个人设置填写自己的公共项目。切换账号时，配置与工时报表归档到 `.local/workbench/employees/<员工ID>/`，本地计划按员工 ID 保存在浏览器中，草稿幂等记录包含员工身份。当前仍是单机单活动会话，并非多人共享服务。
+首次使用时没有预设员工身份。飞书扫码后，工作台通过 OA 身份接口和申请人联动自动识别姓名、部门、员工 ID 与工号；系统默认调出项目为 `OS_AIOS_2026`；首次登录后弹窗提示设置公共项目，预填此默认值（已有名称会保留），确认保存后进入工作台。配置按账号保存在本机，下次进入不再提示，可在个人设置修改。切换账号时，配置与工时报表归档到 `.local/workbench/employees/<员工ID>/`，本地计划按员工 ID 保存在浏览器中，草稿幂等记录包含员工身份。当前仍是单机单活动会话，并非多人共享服务。

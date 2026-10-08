@@ -1,6 +1,9 @@
 import { hoursCycle } from './hours-cycle.js';
 import { createIcons, Clock3, LayoutDashboard, ClipboardList, Settings2, CircleHelp, ChevronRight, ChevronDown, ChevronLeft, ArrowRight, ArrowDown, ArrowUpRight, RefreshCw, CalendarDays, Search, Download, FolderOpen, CheckCheck, ChartNoAxesColumnIncreasing, ShieldCheck, Info, X, Check, Sun, Moon, Menu, Building2, CircleCheck, SlidersHorizontal, ListFilter, MousePointer2, FileText, Plus, Trash2, ArrowLeft, AlertCircle, ExternalLink, LoaderCircle } from 'lucide';
 
+// Injected by the build from package.json; falls back when loaded unbundled.
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
+
 const icons = {Clock3, LayoutDashboard, ClipboardList, Settings2, CircleHelp, ChevronRight, ChevronDown, ChevronLeft, ArrowRight, ArrowDown, ArrowUpRight, RefreshCw, CalendarDays, Search, Download, FolderOpen, CheckCheck, ChartNoAxesColumnIncreasing, ShieldCheck, Info, X, Check, Sun, Moon, Menu, Building2, CircleCheck, SlidersHorizontal, ListFilter, MousePointer2, FileText, Plus, Trash2, ArrowLeft, AlertCircle, ExternalLink, LoaderCircle};
 const $ = s => document.querySelector(s);
 const e = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -16,12 +19,15 @@ let toastTimer;
 let modalReturn;
 let lastQuery;
 let authTimer;
+let authCountdownTimer;
+let authRequest;
 let authVersion=0;
 let savedVersion=0;
 let oaSaved={items:[],loading:false,error:'',checked:false};
 
 let connection='checking';
 let connectionEpoch=0;
+let entryLoginRequired=false;
 function setConnection(value) {
   connection=value;
   const panel=$('#oa-connection');
@@ -64,7 +70,7 @@ async function api(path, body) {
   const response = await fetch(path, body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const data = await response.json();
   if(epoch===connectionEpoch){
-    if(data.code==='oa_login_required')setConnection('missing');
+    if(data.code==='oa_login_required'){entryLoginRequired=true;setConnection('missing');}
     else if(response.ok && (path==='/api/query'||path==='/api/oa-saved'||data.status==='authenticated'))setConnection('connected');
     else if(!response.ok && connection==='checking' && (path==='/api/query'||path==='/api/oa-saved'))setConnection('unknown');
   }
@@ -107,7 +113,6 @@ function renderShell() {
     <div class="mobile-overlay" data-action="close-nav"></div>
     <aside class="sidebar" aria-label="侧边栏">
       <a class="brand" href="#" data-view="workbench" aria-label="时序工时工作台首页"><img src="/favicon.svg" alt=""><div><div class="brand-name">时序</div><div class="brand-sub">HOURS WORKSPACE</div></div></a>
-      <div class="workspace-tag">${icon('building-2')}<span>个人工作空间</span></div>
       <div class="nav-caption">工作台</div>
       <nav aria-label="主导航">
         <button class="nav-item" data-view="workbench">${icon('layout-dashboard')}项目工时</button>
@@ -117,7 +122,7 @@ function renderShell() {
         <button class="nav-item" data-view="settings">${icon('settings-2')}个人设置</button>
         <button class="nav-item" data-action="help">${icon('circle-help')}使用指南${icon('arrow-up-right','ml-auto')}</button>
         <div class="sidebar-note"><strong>${icon('shield-check')}你的每一步，都可核对</strong><p>先查看工时，再整理计划。<br>预览后可创建 OA 草稿。</p></div>
-        <div class="sidebar-footer"><span class="dot"></span>本地工作空间<span class="ml-auto">v0.1</span></div>
+        <div class="sidebar-footer"><span class="dot"></span>本地工作空间<span class="ml-auto">v${APP_VERSION}</span></div>
       </div>
     </aside>
     <div class="shell">
@@ -140,14 +145,29 @@ function renderMain() {
   if(state.view==='workbench') {renderTable();updatePlanButton();}
   drawIcons();
 }
+function queryRange() {
+  return lastQuery||(state.report?{start:state.report.start_date,end:state.report.end_date}:hoursCycle(nowDate()));
+}
+function queryToolbar() {
+  const r=state.report,{start,end}=queryRange(),cycle=hoursCycle(end);
+  const isCycle=cycle.start===start&&cycle.end===end,disabled=state.busy?'disabled':'';
+  const queryTime=r?.queried_at?new Intl.DateTimeFormat('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(r.queried_at)):'';
+  const previousResult=r&&(r.start_date!==start||r.end_date!==end);
+  return `<section class="card query-toolbar" aria-label="工时查询">
+    <div class="query-controls"><div class="query-month-field"><label for="query-month">工时周期</label><div class="query-month-control"><button class="icon-btn" data-cycle-offset="-1" aria-label="上一个工时周期" ${disabled}>${icon('chevron-left')}</button><input id="query-month" type="month" aria-describedby="query-period" value="${isCycle?end.slice(0,7):''}" ${disabled}><button class="icon-btn" data-cycle-offset="1" aria-label="下一个工时周期" ${disabled}>${icon('chevron-right')}</button></div></div>
+    <div class="query-shortcuts"><button class="btn" data-action="current-cycle" ${disabled}>本月</button><button class="btn" data-action="date" ${disabled}>${icon('calendar-days')}自定义日期</button></div>
+    <div class="query-submit"><span class="query-time">上次查询 ${queryTime||'—'}</span><button class="btn btn-primary" data-action="refresh" ${disabled}>${icon('refresh-cw',state.busy?'spinning':'')}<span>${state.busy?'正在查询…':'刷新工时'}</span></button></div></div>
+    <div class="query-context" id="query-period"><span><strong>${isCycle?e(cycle.label):'自定义日期'}</strong><span class="query-dates">${e(shortDate(start))} — ${e(shortDate(end))}</span></span><span>周期：上月 25 日至本月 24 日</span></div>
+    ${previousResult?`<p class="query-retained" role="status">${state.busy?'正在查询所选日期，暂时显示':'当前保留的查询结果：'} ${e(shortDate(r.start_date))} — ${e(shortDate(r.end_date))}</p>`:''}
+  </section>`;
+}
 function workbench() {
   const r=state.report;
-  const queryTime=r?.queried_at?new Intl.DateTimeFormat('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(r.queried_at)):'';
-  const action=`<div class="heading-actions"><span class="sync-time">${icon('clock-3')}上次查询 ${queryTime || '—'}</span><button class="btn btn-primary" data-action="refresh" ${state.busy?'disabled':''}>${icon('refresh-cw',state.busy?'spinning':'')}<span>${state.busy?'正在查询…':'刷新工时'}</span></button></div>`;
-  let html=heading('项目工时','选择调出项目，按实际投入重新分配工时。',action);
+  let html=heading('项目工时','选择调出项目，按实际投入重新分配工时。');
+  html+=queryToolbar();
   html+=`<div id="oa-saved-flows">${savedFlowsPanel()}</div>`;
   if(state.error) html+=`<div class="query-error flex-wrap" role="alert">${icon('alert-circle')}<span><strong>工时查询失败</strong><br>${e(state.error)}<br>工作台需要单独扫码登录；在其他浏览器登录 OA 不会同步到这里。${r?'当前显示上次查询结果。':''}</span><div class="flex flex-wrap gap-2"><button class="btn btn-small" data-action="oa-login">扫码登录 OA</button><button class="btn btn-small" data-action="retry-query">重试查询 ${icon('refresh-cw')}</button></div><button class="icon-btn" data-action="clear-error" aria-label="关闭提示">${icon('x')}</button></div>`;
-  if(!r) return html+`<div class="card empty-state">${icon('calendar-days')}<strong>从一次工时查询开始</strong><p>选择日期范围，读取当前 OA 账号的个人工时。</p><button class="btn btn-primary" data-action="date">选择日期并查询</button></div>`;
+  if(!r) return html+`<div class="card empty-state">${icon(state.busy?'loader-circle':'calendar-days',state.busy?'spinning':'')}<strong>${state.busy?'正在读取工时':'从一次工时查询开始'}</strong><p>在上方选择工时周期或自定义日期，查询你的 OA 工时。</p></div>`;
   if(!sameProject()) html+=`<div class="query-error">${icon('info')}<span>公共项目已更新为 ${e(state.profile.public_project)}。刷新工时后即可按新项目整理计划。</span></div>`;
   html+=`<section class="card source-picker"><strong>调出项目 · 可多选</strong><div class="source-options">${Object.keys(r.project_totals).filter(p=>p!=='合计').map(p=>`<label><input type="checkbox" data-source-project="${e(p)}" ${sourceProjects().includes(p)?'checked':''} ${state.busy?'disabled':''}><span>${e(p)}</span><small>${fmt(r.project_totals[p])} h</small></label>`).join('')}</div><p>按日期汇总可调工时；部分调出时，按当天各来源工时占比分摊，精确到 0.01 小时。预览可核对每个来源。</p></section>`;
   const total=Number(r.project_totals['合计'] || 0), pub=candidates().reduce((s,x)=>s+Number(x.hours),0), assigned=total-pub;
@@ -158,22 +178,37 @@ function workbench() {
     <div class="metric public"><div class="metric-label">所选来源工时<span class="metric-icon">${icon('folder-open')}</span></div><div class="metric-value"><strong class="num">${fmt(pub)}</strong><span>小时</span></div><div class="metric-foot"><span class="tag">${candidates().length} 天</span>可查看调整候选</div></div>
     <div class="metric"><div class="metric-label">其他项目工时<span class="metric-icon green">${icon('check-check')}</span></div><div class="metric-value"><strong class="num">${fmt(assigned)}</strong><span>小时</span></div><div class="metric-foot"><span class="mini-progress"><i style="width:${ratio}%"></i></span><span>占总工时 ${fmt(ratio)}%</span></div></div>
   </section>`;
-  const cycle=hoursCycle(r.end_date);
-  html+=`<p class="helper">${cycle.start===r.start_date&&cycle.end===r.end_date?e(cycle.label)+' · ':''}${e(r.start_date)} 至 ${e(r.end_date)} · 工时周期按上月 25 日至本月 24 日计算</p>`;
   html+=chart();
-  html+=`<div class="workspace"><div class="min-w-0"><section class="card records" aria-label="工时记录"><div class="records-head"><div class="records-title-row"><h2><span class="step-tag">01</span> 核对并选择工时</h2><button class="text-btn" data-action="export-csv">${icon('download')}导出记录</button></div><div class="tabs" role="tablist" aria-label="工时类型"><button class="tab ${state.tab==='public'?'active':''}" role="tab" aria-selected="${state.tab==='public'}" data-tab="public">项目工时<span class="count">${candidates().length}</span></button><button class="tab ${state.tab==='all'?'active':''}" role="tab" aria-selected="${state.tab==='all'}" data-tab="all">全部记录<span class="count">${allRows().length}</span></button></div></div><div class="filter-row"><label class="search">${icon('search')}<span class="sr-only">搜索日期或项目</span><input id="record-search" type="search" placeholder="搜索日期或项目" value="${e(state.search)}"></label><button class="btn date-button" data-action="date">${icon('calendar-days')}<span>${e(r.start_date.slice(5).replace('-','.'))} — ${e(r.end_date.slice(5).replace('-','.'))}</span>${icon('chevron-down')}</button></div><div id="table-content"></div></section><div class="notice">${icon('info')}<span>仅可调出所选项目的已有工时；请同时核对已有调整流程，避免重复调整。</span></div></div><aside class="card plan-card" aria-label="新建调整计划">${planPanel()}</aside></div>`;
+  html+=`<div class="workspace"><div class="min-w-0"><section class="card records" aria-label="工时记录"><div class="records-head"><div class="records-title-row"><h2><span class="step-tag">01</span> 核对并选择工时</h2><button class="text-btn" data-action="export-csv">${icon('download')}导出记录</button></div><div class="tabs" role="tablist" aria-label="工时类型"><button class="tab ${state.tab==='public'?'active':''}" role="tab" aria-selected="${state.tab==='public'}" data-tab="public">项目工时<span class="count">${candidates().length}</span></button><button class="tab ${state.tab==='all'?'active':''}" role="tab" aria-selected="${state.tab==='all'}" data-tab="all">全部记录<span class="count">${allRows().length}</span></button></div></div><div class="filter-row"><label class="search">${icon('search')}<span class="sr-only">搜索日期或项目</span><input id="record-search" type="search" placeholder="搜索日期或项目" value="${e(state.search)}"></label></div><div id="table-content"></div></section><div class="notice">${icon('info')}<span>仅可调出所选项目的已有工时；请同时核对已有调整流程，避免重复调整。</span></div></div><aside class="card plan-card" aria-label="新建调整计划">${planPanel()}</aside></div>`;
   html+=`<footer class="bottom-caption"><span>${icon('circle-check')}来源：OA 个人工时报表 · ${e(shortDate(r.start_date))} — ${e(shortDate(r.end_date))}</span><span>填写从核对开始，每一小时都有据可查。</span></footer>`;
   return html;
 }
 function chart() {
   const daily=state.report.daily;
   if(daily.length>62) return `<section class="card activity"><div class="card-head"><h2>区间工时分布</h2><button class="text-btn" data-action="date">缩小日期范围查看逐日图表 ${icon('arrow-right')}</button></div><p class="helper">当前区间 ${daily.length} 天，可在下方查看和筛选全部明细。</p></section>`;
-  const max=Math.max(8,...daily.map(d=>Number(d.hours['合计'])));
-  return `<section class="card activity" aria-label="逐日工时分布"><div class="card-head"><h2>工时分布<span class="sub">${e(state.report.start_date)} 至 ${e(state.report.end_date)} · 点击项目工时柱选择日期</span></h2><div class="legend"><span><i class="public-dot"></i>公共项目</span><span><i class="assigned-dot"></i>正式工时</span><span><i class="missing-dot"></i>未填工时</span></div></div><div class="chart"><div class="chart-axis"><span>${fmt(max)}h</span><span>0</span></div><div class="chart-bars">${daily.map(d=>{
-    const pub=Number(d.hours[state.report.public_project]||0), other=Math.max(0,Number(d.hours['合计'])-pub),missing=Number(d.calendar?.missing_hours||0),chosen=state.selected.has(d.date);
-    const label=`${d.date}：公共项目 ${fmt(pub)} 小时，正式工时 ${fmt(other)} 小时，${d.calendar?.known?`未填 ${fmt(missing)} 小时 · ${d.calendar.label}${d.calendar.future?'（未来日期）':''}`:'日历未知，未判断缺填'}`;
-    return `<button class="bar-wrap ${chosen?'chosen':''}" data-chart-date="${d.date}" aria-label="${label}${sourceHours(d)?'，选择调整':'，查看明细'}" title="${label}"><span class="bar-space">${missing?`<span class="bar missing-bar" style="height:${missing/max*100}%"></span>`:''}${pub?`<span class="bar public-bar" style="height:${pub/max*100}%"></span>`:''}${other?`<span class="bar" style="height:${other/max*100}%"></span>`:''}${!other&&!pub&&!missing?'<span class="bar empty"></span>':''}</span><span class="bar-day num">${d.date.slice(8)}</span></button>`;
-  }).join('')}</div></div><p class="helper">工作日应填 8 小时，按法定节假日及调休判断；未来日期不计缺填。${state.report.calendar_info?.unknown_years?.length?'部分年份日历未配置，暂不标记未填工时。':''}</p></section>`;
+  const names=[...new Set(daily.flatMap(d=>Object.keys(d.hours).filter(name=>name!=='合计'&&Number(d.hours[name])>0)))].sort((a,b)=>a.localeCompare(b,'zh-CN'));
+  const projects=[...names.filter(name=>name===state.report.public_project),...names.filter(name=>name!==state.report.public_project)].map(name=>({name,color:chartProjectColor(name)}));
+  const missingHours=d=>Math.max(0,Number(d.calendar?.missing_hours||0));
+  const max=Math.max(8,...daily.map(d=>sumHours(projects.map(p=>Math.max(0,Number(d.hours[p.name]||0))))+missingHours(d)));
+  const hasMissing=daily.some(d=>missingHours(d)>0);
+  return `<section class="card activity project-activity" aria-label="逐日工时分布"><div class="card-head"><h2>工时分布<span class="sub">${e(state.report.start_date)} 至 ${e(state.report.end_date)}</span></h2><span class="chart-guide">每段颜色代表一个项目 · 悬停查看工时</span></div>
+    <ul class="project-legend" aria-label="项目图例">${projects.map(p=>`<li data-legend-project="${e(p.name)}"><i style="background:${p.color}" aria-hidden="true"></i><span>${e(p.name)}${p.name===state.report.public_project?' <small>公共项目</small>':''}</span></li>`).join('')}${hasMissing?'<li><i class="missing-swatch" aria-hidden="true"></i><span>未填工时</span></li>':''}</ul>
+    <div class="chart"><div class="chart-axis"><span>${fmt(max)}h</span><span>0</span></div><div class="chart-bars">${daily.map(d=>{
+      const segments=projects.filter(p=>Number(d.hours[p.name])>0),missing=missingHours(d),chosen=state.selected.has(d.date);
+      const details=segments.map(p=>`${p.name} ${fmt(d.hours[p.name])} 小时`);
+      const label=`${d.date}：合计 ${fmt(d.hours['合计'])} 小时；${details.length?details.join('；'):'暂无已填工时'}；${d.calendar?.known?`未填 ${fmt(missing)} 小时 · ${d.calendar.label}${d.calendar.future?'（未来日期）':''}`:'日历未知，未判断缺填'}`;
+      return `<button class="bar-wrap ${chosen?'chosen':''}" data-chart-date="${d.date}" ${sourceHours(d)>0?`aria-pressed="${chosen}"`:''} aria-label="${e(label)}${sourceHours(d)>0?'，选择调整':'，查看明细'}" title="${e(label)}" ${state.busy?'disabled':''}><span class="bar-space" aria-hidden="true">${missing?`<span class="bar missing-bar" style="height:${missing/max*100}%" title="${e(d.date)} · 未填工时 ${fmt(missing)} 小时"></span>`:''}${segments.map(p=>`<span class="bar project-bar" data-chart-project="${e(p.name)}" style="height:${Number(d.hours[p.name])/max*100}%;background:${p.color}" title="${e(d.date)} · ${e(p.name)}：${fmt(d.hours[p.name])} 小时（当天合计 ${fmt(d.hours['合计'])} 小时）"></span>`).join('')}${!segments.length&&!missing?'<span class="bar empty"></span>':''}</span><span class="bar-day num">${d.date.slice(8)}</span></button>`;
+    }).join('')}</div></div><p class="helper">点击柱子选择调整日期；无调出工时的日期可点击查看明细。工作日应填 8 小时，按法定节假日及调休判断，未来日期不计缺填。${state.report.calendar_info?.unknown_years?.length?` ${state.report.calendar_info.unknown_years.join('、')} 年日历未配置，这些日期暂不标记未填工时，需补充 data/holidays/ 数据。`:''}</p></section>`;
+}
+const chartProjectColors=new Map();
+function chartProjectColor(name) {
+  if(name===state.report.public_project)return 'var(--chart-public)';
+  const key=JSON.stringify([state.profile.id,name]);
+  if(!chartProjectColors.has(key)){
+    const n=chartProjectColors.size;
+    chartProjectColors.set(key,n<8?`var(--chart-project-${n})`:`hsl(${(n*137.508)%360} 48% 52%)`);
+  }
+  return chartProjectColors.get(key);
 }
 function allRows() {
   if(!state.report) return [];
@@ -327,8 +362,14 @@ function updatePlanButton() {
 }
 function selectionChanged(focusDate) {
   renderTable();$('#quantity-area').innerHTML=quantityArea();updatePlanButton();
-  document.querySelectorAll('[data-chart-date]').forEach(b=>b.classList.toggle('chosen',state.selected.has(b.dataset.chartDate)));
+  document.querySelectorAll('[data-chart-date]').forEach(b=>{const selected=state.selected.has(b.dataset.chartDate);b.classList.toggle('chosen',selected);if(b.hasAttribute('aria-pressed'))b.setAttribute('aria-pressed',String(selected));});
   if(focusDate)document.querySelector(`[data-row-date="${focusDate}"]`)?.focus();drawIcons();
+}
+function needsProjectSetup() {return Boolean(state.profile?.id)&&(!state.profile.public_project||!state.profile.public_project_confirmed);}
+function publicProjectModal() {
+  openModal('设置你的公共项目','首次使用，请确认你在 OA 中的个人公共项目名称。',
+    `<form id="project-setup-form"><div class="field"><label for="setup-public-project">公共项目名称</label><input id="setup-public-project" value="${e(state.profile.public_project)}" placeholder="填写 OA 中的完整项目名称" required maxlength="180"><p class="helper">每个人的公共项目可能不同，请确认名称属于你本人。保存到本机后，可随时在“个人设置”中修改。</p></div><p id="setup-error" class="error-text" role="alert"></p></form>`,
+    `<button class="btn" data-action="close-modal">稍后设置</button><button class="btn btn-primary" id="setup-save" type="submit" form="project-setup-form">保存并进入工作台</button>`);
 }
 function settingsView() {
   if(!state.profile.id)return heading('个人设置','扫码登录后自动识别员工身份。')+`<div class="settings-layout"><section class="card empty-state"><span class="connection-icon">${icon('shield-check')}</span><strong>尚未登录 OA</strong><p>登录后显示你的姓名、部门与默认调出项目。已有个人配置会在登录同一账号后恢复。</p></section><aside class="settings-tip"><section class="card connection-card" id="oa-connection">${connectionPanel()}</section></aside></div>`;
@@ -354,20 +395,39 @@ function openModal(title, subtitle, body, footer='') {
   if(!$('#modal').open)$('#modal').showModal();drawIcons();
 }
 function closeModal() {if(state.creating){toast('正在创建 OA 表单，请等待结果');return;}$('#modal').close();if(modalReturn?.isConnected)modalReturn.focus();}
+function stopAuthTimers() {clearTimeout(authTimer);clearInterval(authCountdownTimer);authCountdownTimer=null;}
 async function loginModal() {
-  clearTimeout(authTimer);
+  stopAuthTimers();
   const version=++authVersion;
   openModal('连接工作台与 OA','请用飞书扫码，为当前工时工作台登录。',
-    `<div class="text-center"><p id="auth-message" role="status" class="mb-4">正在准备登录二维码…</p><img id="auth-qr" alt="请用飞书扫描此二维码登录工作台的 OA 会话" hidden style="width:240px;max-width:100%;margin:0 auto;padding:12px;background:white;image-rendering:pixelated"><p class="helper mt-4">此登录与 Windows Chrome 中的 OA 登录独立。完成后会自动重新查询工时。</p></div>`,
+    `<div class="text-center"><p id="auth-message" role="status" class="mb-4">正在准备登录二维码…</p><div id="auth-qr-frame" class="auth-qr-frame"><img id="auth-qr" alt="请用飞书扫描此二维码登录工作台的 OA 会话" hidden><div id="auth-qr-expired" class="auth-qr-expired" hidden>${icon('refresh-cw')}<strong>请刷新二维码</strong></div></div><p id="auth-countdown" class="auth-countdown" role="timer" aria-live="off" hidden></p><p class="helper mt-4">请使用飞书扫码，并在手机上确认登录。登录成功后将自动加载你的工时。</p></div>`,
     `<button class="btn" data-action="close-modal">关闭</button><button class="btn btn-primary" data-action="oa-login" id="auth-refresh" disabled>刷新二维码</button>`);
   const deadline=Date.now()+10*60*1000;
+  let expiresAt=null,expired=false,scanned=false;
+  const current=()=>version===authVersion&&$('#modal').open&&$('#auth-message');
+  function updateCountdown() {
+    if(!current())return;
+    if(scanned){$('#auth-qr-frame').hidden=true;$('#auth-countdown').hidden=true;return;}
+    if(expiresAt===null&&!expired)return;
+    const seconds=expired?0:Math.max(0,Math.ceil((expiresAt-Date.now())/1000));
+    $('#auth-qr-frame').hidden=false;
+    $('#auth-countdown').hidden=false;
+    $('#auth-countdown').classList.toggle('urgent',seconds<=15);
+    $('#auth-countdown').textContent=seconds>0?`预计 ${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')} 后过期`:expired?'二维码已过期，请刷新':'二维码已到期，请刷新';
+    $('#auth-qr').hidden=seconds===0;
+    $('#auth-qr-expired').hidden=seconds>0;
+    if(seconds===0)$('#auth-message').textContent='二维码已到期，请刷新后重新扫码';
+  }
   async function poll(start) {
     try {
-      const data=await api(start?'/api/auth/start':'/api/auth/status',{});
-      if(version!==authVersion || !$('#modal').open || !$('#auth-message'))return;
+      const pending=api(start?'/api/auth/start':'/api/auth/status',{});
+      authRequest=pending;
+      const data=await pending.finally(()=>{if(authRequest===pending)authRequest=null;});
+      if(!current())return;
       $('#auth-refresh').disabled=false;
       $('#auth-message').textContent=data.message;
       if(data.status==='authenticated'){
+        stopAuthTimers();
         closeModal();
         connectionEpoch++;savedVersion++;
         const previousId=state.profile.id;
@@ -376,27 +436,39 @@ async function loginModal() {
           state.report=null;state.reportId=null;state.selected.clear();state.targets=[{value:'',custom:''}];state.reason='';state.preview=null;selectedSources=null;lastQuery=null;
           state.plans=readLocal(`hours-plans-${state.profile.id}`,[]);oaSaved={items:[],loading:false,error:'',checked:false};
         }
+        entryLoginRequired=false;state.view='workbench';
         renderShell();setConnection('connected');
-        if(!state.profile.public_project){navigate('settings');toast('已识别你的 OA 账号，请先填写个人公共项目');void checkSavedFlows();return;}
+        if(needsProjectSetup()){navigate('settings');publicProjectModal();void checkSavedFlows();return;}
         toast('OA 登录成功，正在重新查询');
         void checkSavedFlows();
         const today=nowDate();
         await refresh(lastQuery?.start || state.report?.start_date || hoursCycle(today).start,lastQuery?.end || state.report?.end_date || hoursCycle(today).end);
         return;
       }
-      if(data.qr?.startsWith('data:image/png;base64,')){$('#auth-qr').src=data.qr;$('#auth-qr').hidden=false;}
-      else $('#auth-qr').hidden=true;
+      scanned=Boolean(data.scanned);expired=data.status==='expired';
+      if(data.qr?.startsWith('data:image/png;base64,')){
+        $('#auth-qr').src=data.qr;$('#auth-qr').hidden=false;
+        if(expiresAt===null)expiresAt=Number.isFinite(data.qr_expires_at)?data.qr_expires_at:Date.now()+60000;
+      }else $('#auth-qr').hidden=true;
+      if(data.status==='waiting'||expired){
+        updateCountdown();
+        if(data.status==='waiting'&&!scanned&&expiresAt!==null&&!authCountdownTimer)authCountdownTimer=setInterval(updateCountdown,250);
+        if(expired||scanned){clearInterval(authCountdownTimer);authCountdownTimer=null;}
+      }else{clearInterval(authCountdownTimer);authCountdownTimer=null;$('#auth-qr-frame').hidden=true;$('#auth-countdown').hidden=true;}
       if(data.status==='waiting' && Date.now()<deadline)authTimer=setTimeout(()=>poll(false),2500);
-      else if(data.status==='waiting')$('#auth-message').textContent='登录等待已超时，请刷新二维码。';
+      else if(data.status==='waiting'){stopAuthTimers();$('#auth-message').textContent='登录等待已超时，请刷新二维码。';}
     } catch(err) {
-      if(version!==authVersion || !$('#auth-message'))return;
+      if(!current())return;
       $('#auth-message').textContent=err.message;$('#auth-refresh').disabled=false;
     }
   }
+  // Finish an outstanding status request before refreshing; the OA auth API serializes them.
+  if(authRequest)await authRequest.catch(()=>{});
+  if(!current())return;
   await poll(true);
 }
 function dateModal() {
-  const today=nowDate(), start=state.report?.start_date||hoursCycle(today).start,end=state.report?.end_date||hoursCycle(today).end;
+  const {start,end}=queryRange();
   openModal('选择查询日期','工时周期：上月 25 日至本月 24 日，以结束月份命名。',`<div class="range-presets"><button class="btn btn-small" data-range="current">本月工时周期</button><button class="btn btn-small" data-range="previous">上月工时周期</button><button class="btn btn-small" data-range="recent">最近 7 天</button></div><form id="range-form"><div class="field"><label for="cycle-month">选择工时周期月份</label><input id="cycle-month" type="month" value="${hoursCycle(end).start===start&&hoursCycle(end).end===end?end.slice(0,7):''}"><p class="helper">选择月份后自动填入上月 25 日至所选月份 24 日，也可自定义下方日期。</p></div><div class="range-fields"><div class="field"><label for="range-start">开始日期</label><input id="range-start" type="date" value="${start}" required></div><div class="field"><label for="range-end">结束日期</label><input id="range-end" type="date" value="${end}" required></div></div><p id="range-error" class="error-text" role="alert"></p><p class="helper">查询将读取当前 OA 账号的工时，保留已有的本地计划。</p></form>`,`<button class="btn" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit" form="range-form">查询工时 ${icon('arrow-right')}</button>`);
 }
 function helpModal() {
@@ -423,7 +495,7 @@ async function refresh(start, end) {
   } catch(err) {state.error=err.message;toast('查询未完成，保留上一次结果');}
   finally {state.busy=false;renderMain();}
 }
-function navigate(view) {state.view=view;renderMain();$('.sidebar').classList.remove('open');$('.mobile-overlay').classList.remove('visible');$('#main').focus({preventScroll:true});window.scrollTo({top:0,behavior:'instant'});}
+function navigate(view) {const setup=view==='workbench'&&needsProjectSetup();state.view=setup?'settings':view;renderMain();$('.sidebar').classList.remove('open');$('.mobile-overlay').classList.remove('visible');$('#main').focus({preventScroll:true});window.scrollTo({top:0,behavior:'instant'});if(setup)publicProjectModal();}
 function exportCSV() {
   const safe=v=>{let text=String(v);if(/^[=+\-@\t\r]/.test(text))text="'"+text;return '"'+text.replaceAll('"','""')+'"';};
   const rows=[['日期','项目','工时'],...allRows().map(r=>[r.date,r.project,r.hours])];
@@ -435,6 +507,11 @@ document.addEventListener('click',async event=>{
   if(button.dataset.action==='add-target'){state.targets.push({value:'',custom:''});state.selected.forEach(values=>values.push('0'));renderPlan();return;}
   if(button.dataset.removeTarget!==undefined){const i=Number(button.dataset.removeTarget);state.targets.splice(i,1);state.selected.forEach(values=>values.splice(i,1));renderPlan();return;}
   if(button.dataset.view){event.preventDefault();navigate(button.dataset.view);return;}
+  if(button.dataset.cycleOffset){
+    if(state.busy)return;
+    const cycle=hoursCycle(queryRange().end,Number(button.dataset.cycleOffset));
+    await refresh(cycle.start,cycle.end);$('#query-month')?.focus({preventScroll:true});return;
+  }
   if(button.dataset.tab){state.tab=button.dataset.tab;state.page=1;renderMain();return;}
   if(button.dataset.chartDate){
     const date=button.dataset.chartDate,c=candidates().find(r=>r.date===date);
@@ -472,7 +549,8 @@ document.addEventListener('click',async event=>{
     case 'close-modal':closeModal();break;
     case 'help':helpModal();break;
     case 'date':dateModal();break;
-    case 'refresh':if(!state.report)dateModal();else await refresh(state.report.start_date,state.report.end_date);break;
+    case 'current-cycle':{const cycle=hoursCycle(nowDate());await refresh(cycle.start,cycle.end);break;}
+    case 'refresh':{const range=queryRange();await refresh(range.start,range.end);break;}
     case 'retry-query':if(lastQuery)await refresh(lastQuery.start,lastQuery.end);break;
     case 'oa-login':await loginModal();break;
     case 'check-saved':await checkSavedFlows();break;
@@ -536,8 +614,12 @@ document.addEventListener('click',async event=>{
   }
 });
 document.addEventListener('click',event=>{if(event.target.classList.contains('mobile-overlay')){$('.sidebar').classList.remove('open');$('.mobile-overlay').classList.remove('visible');}});
-document.addEventListener('change',event=>{
+document.addEventListener('change',async event=>{
   const el=event.target;
+  if(el.id==='query-month'){
+    if(state.busy||!/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value))return;
+    const cycle=hoursCycle(el.value+'-01');await refresh(cycle.start,cycle.end);$('#query-month')?.focus({preventScroll:true});return;
+  }
   if(el.dataset.sourceProject!==undefined){selectSource(el.dataset.sourceProject,el.checked);return;}
   if(el.id==='cycle-month'&&el.value){const cycle=hoursCycle(el.value+'-01');$('#range-start').value=cycle.start;$('#range-end').value=cycle.end;}
   if(el.id==='range-start'||el.id==='range-end'){const start=$('#range-start').value,end=$('#range-end').value;$('#cycle-month').value=end&&hoursCycle(end).start===start&&hoursCycle(end).end===end?end.slice(0,7):'';}
@@ -560,13 +642,28 @@ document.addEventListener('submit',async event=>{
     if(!start||!end||start>end||(new Date(end)-new Date(start))/86400000>366){$('#range-error').textContent='请选择起止顺序正确、且不超过一年的日期范围。';return;}
     closeModal();await refresh(start,end);
   }
-  if(event.target.id==='profile-form'){
-    const public_project=$('#public-project').value.trim();const btn=event.target.querySelector('button');btn.disabled=true;
-    try{const data=await api('/api/profile',{public_project});state.profile=data.profile;state.selected.clear();renderMain();toast('个人公共项目已保存，请重新查询工时');}catch(err){$('#settings-error').textContent=err.message;btn.disabled=false;}
+  if(event.target.id==='profile-form'||event.target.id==='project-setup-form'){
+    const setup=event.target.id==='project-setup-form', firstSetup=needsProjectSetup();
+    const input=$(setup?'#setup-public-project':'#public-project');
+    const error=$(setup?'#setup-error':'#settings-error');
+    const btn=setup?$('#setup-save'):event.target.querySelector('button');
+    const public_project=input.value.trim();
+    if(!public_project){error.textContent='请填写公共项目名称';input.focus();return;}
+    if(btn.disabled)return;
+    btn.disabled=true;error.textContent='';
+    try{
+      const data=await api('/api/profile',{public_project});state.profile=data.profile;
+      state.selected.clear();selectedSources=null;
+      if(setup)closeModal();
+      if(firstSetup){
+        state.view='workbench';renderMain();toast('公共项目已保存到本机，正在查询工时');
+        const cycle=hoursCycle(nowDate());await refresh(cycle.start,cycle.end);
+      }else{renderMain();toast('公共项目已保存到本机，请重新查询工时');}
+    }catch(err){if(error.isConnected)error.textContent=err.message;btn.disabled=false;}
   }
 });
 $('#modal').addEventListener('cancel',event=>{if(state.creating)event.preventDefault();});
-$('#modal').addEventListener('close',()=>{clearTimeout(authTimer);authVersion++;});
+$('#modal').addEventListener('close',()=>{stopAuthTimers();authVersion++;});
 $('#modal').addEventListener('click',event=>{if(event.target===$('#modal')){const r=$('#modal').getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeModal();}});
 
 async function boot() {
@@ -575,12 +672,17 @@ async function boot() {
     state.theme=readLocal('hours-theme','light');document.documentElement.dataset.theme=state.theme;
     const saved=readLocal(`hours-plans-${state.profile.id}`,[]);state.plans=Array.isArray(saved)?saved.filter(p=>p?.employee?.id===state.profile.id&&Array.isArray(p.adjustments)&&p.adjustments.length):[];
     renderShell();
-    if(!state.profile.id){setConnection('missing');navigate('settings');return;}
-    if(!state.profile.public_project){navigate('settings');void checkSavedFlows();return;}
-    void checkSavedFlows();
-    const today=nowDate();
-    const cycle=hoursCycle(today);
-    await refresh(cycle.start,cycle.end);
+    if(!state.profile.id){setConnection('missing');navigate('settings');await loginModal();return;}
+    if(needsProjectSetup()){
+      navigate('settings');await checkSavedFlows();
+      if(entryLoginRequired&&!$('#modal').open)await loginModal();
+      else if(!$('#modal').open)publicProjectModal();
+      return;
+    }
+    const cycle=hoursCycle(nowDate());
+    // Finish startup checks before beginning authorization (the backend serializes them).
+    await Promise.all([checkSavedFlows(),refresh(cycle.start,cycle.end)]);
+    if(entryLoginRequired&&!$('#modal').open)await loginModal();
   } catch(err) {$('#app').innerHTML=`<div class="initial-load"><div class="text-center"><h1 class="text-xl mb-3">暂时无法打开工时工作台</h1><p class="muted mb-4">${e(err.message)}</p><a class="btn" href="/">重新加载</a></div></div>`;}
 }
 boot();

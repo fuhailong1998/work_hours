@@ -1,5 +1,4 @@
 """Run against the local server: python tests/check_auto_query.py."""
-import json
 from playwright.sync_api import sync_playwright, expect
 
 URL = "http://127.0.0.1:18767"

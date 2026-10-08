@@ -37,13 +37,20 @@ def _request_list(client, employee_id, filters, category):
             if str(row.get('creater'))!=str(employee_id) or str(row.get('workflowid'))!='110092':
                 raise ValueError('OA 返回的流程不符合员工或流程类型筛选条件')
             if category=='saved' and row.get('currentnodeidspan')!='创建':
-                raise ValueError('OA 返回的流程已离开创建节点，请重新检查')
+                raise ValueError('OA 返回的流程不符合创建节点筛选条件，请重新检查')
             items[rid]={'request_id':rid,'title':row.get('requestname','非常规工时调整流程'),
                 'created_at':row.get('createdatespan') or row.get('createdate',''),
                 'node':row.get('currentnodeidspan') or '未知节点',
                 'category':'saved' if row.get('currentnodeidspan')=='创建' else category,
                 'url':OA_ORIGIN+'/spa/workflow/static4form/index.html#/main/workflow/req?requestid='+rid}
-        if len(seen)==before or current>=1000:
-            raise ValueError('OA 流程列表未读取完整，请重新检查')
+        # counts and datas are separate calls; a request leaving the filtered set
+        # between them shortens the last page. Stop once rows have been read --
+        # that is the race saved_adjustments already tolerates. Reading nothing
+        # at all is indistinguishable from a failed read, so keep failing there:
+        # a silently empty list would hide an existing draft.
+        if len(seen)==before:
+            if not seen:raise ValueError('OA 流程列表未读取完整，请重新检查')
+            break
+        if current>=1000:raise ValueError('OA 流程列表过长，请在 OA 中直接查看')
         current+=1
     return list(items.values())

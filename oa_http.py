@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 import threading
-from urllib.parse import urlsplit
 import requests
 
 from app_paths import DATA_ROOT
@@ -23,7 +22,7 @@ class OASession:
         self.http.headers.update({'User-Agent':'Mozilla/5.0', 'Accept':'application/json, text/plain, */*',
                                   'Referer': OA_ORIGIN + '/wui/index.html'})
         if self.path.exists():
-            for c in json.loads(self.path.read_text()):
+            for c in json.loads(self.path.read_text(encoding='utf-8')):
                 self.http.cookies.set(c['name'], c['value'], domain=c['domain'], path=c.get('path', '/'),
                                       secure=c.get('secure', True), expires=c.get('expires'))
 
@@ -35,7 +34,7 @@ class OASession:
             temporary=self.path.with_suffix('.tmp')
             temporary.touch(mode=0o600, exist_ok=True)
             temporary.chmod(0o600)
-            temporary.write_text(json.dumps(data))
+            temporary.write_text(json.dumps(data),encoding='utf-8')
             temporary.replace(self.path)
 
     def request(self, method, path, **kwargs):

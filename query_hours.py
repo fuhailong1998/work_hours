@@ -5,10 +5,10 @@ from datetime import date, datetime
 from decimal import Decimal
 import json
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 
 from html.parser import HTMLParser
-from oa_http import OAAuthRequired, get_session
+from oa_http import get_session
 from work_calendar import annotate_calendar
 
 REPORT = "https://i.thundersoft.com/ThunderSoft/proj/working/PrjWorkingReport2.jsp"
@@ -122,7 +122,7 @@ def main():
     result = query_report(get_session(), args.start, args.end, args.public_project)
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding='utf-8')
     path.chmod(0o600)
     print(json.dumps({k: v for k, v in result.items() if k != "daily"}, ensure_ascii=False, indent=2))
 

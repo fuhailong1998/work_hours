@@ -4,7 +4,7 @@ import io
 import json
 import re
 import threading
-from pathlib import Path
+import time
 from urllib.parse import urlencode, urlsplit, parse_qs, urljoin
 import qrcode
 import requests
@@ -23,6 +23,8 @@ from app_paths import DATA_ROOT
 FLOW_FILE=DATA_ROOT / "oa-http/auth-flow.json"
 APP_ID='cli_a11b74bf89b9d00b'
 CALLBACK='https://larkapproval.thundersoft.com/sso/feishuCallback'
+# Feishu does not return a TTL. An unscanned QR expired at about 60 seconds in observation.
+QR_ESTIMATED_LIFETIME_SECONDS=60
 
 
 def consent_config(url, html):
@@ -65,6 +67,7 @@ class QRFlow:
         self.qr=''
         self.done=False
         self.step=self.api('qrlogin/init',{'biz_type':None,'redirect_uri':self.redirect})
+        self.qr_expires_at=int((time.time()+QR_ESTIMATED_LIFETIME_SECONDS)*1000)
         token=self.step.get('step_info',{}).get('token')
         if not token:raise ValueError('登录接口未返回二维码，请重试')
         data=json.dumps({'qrlogin':{'token':token}},separators=(',',':'))
@@ -74,14 +77,14 @@ class QRFlow:
 
     def persist(self):
         FLOW_FILE.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-        data={k:getattr(self,k,None) for k in ['redirect','headers','qr','done','step','last_url','last_html','callback_url']}
+        data={k:getattr(self,k,None) for k in ['redirect','headers','qr','qr_expires_at','done','step','last_url','last_html','callback_url']}
         data['cookies']=[dict(name=c.name,value=c.value,domain=c.domain,path=c.path,secure=c.secure,expires=c.expires) for c in self.http.cookies]
         temp=FLOW_FILE.with_suffix('.tmp');temp.touch(mode=0o600,exist_ok=True);temp.chmod(0o600)
-        temp.write_text(json.dumps(data));temp.replace(FLOW_FILE)
+        temp.write_text(json.dumps(data),encoding='utf-8');temp.replace(FLOW_FILE)
 
     @classmethod
     def restore(cls):
-        data=json.loads(FLOW_FILE.read_text());flow=cls.__new__(cls)
+        data=json.loads(FLOW_FILE.read_text(encoding='utf-8'));flow=cls.__new__(cls)
         flow.http=requests.Session();flow.http.headers['User-Agent']=HEADERS['User-Agent']
         for c in data.pop('cookies'):flow.http.cookies.set(**c)
         for k,v in data.items():setattr(flow,k,v)
@@ -95,6 +98,12 @@ class QRFlow:
         if response.headers.get('x-flow-key'):self.headers['X-Flow-Key']=response.headers['x-flow-key']
         if data.get('code')!=0:raise ValueError('飞书授权未完成，请刷新二维码后重试')
         return data['data']
+
+    def waiting_result(self):
+        scanned=self.step.get('step_info',{}).get('status')==2
+        return {'status':'waiting', 'scanned':scanned,
+                'message':'已扫码，请在手机上确认登录' if scanned else '请用飞书扫码并在手机上确认登录',
+                'qr':self.qr, 'qr_expires_at':getattr(self,'qr_expires_at',None)}
 
     def complete_consent(self,response):
         config=consent_config(response.url,response.text)
@@ -135,7 +144,7 @@ class QRFlow:
         if step=='qr_login_polling':
             status=info.get('status',0)
             if status not in (0,1,2):return {'status':'expired','message':'二维码已失效，请刷新后重新扫码'}
-            return {'status':'waiting','message':'请用飞书扫码并在手机上确认登录','qr':self.qr}
+            return self.waiting_result()
         if step not in ('enter_app','web_url'):
             return {'status':'error','message':'飞书返回了额外账号验证步骤，当前接口暂不支持；请使用已授权的公司账号重新扫码'}
         last_url=getattr(self,'last_url',None)
@@ -180,7 +189,7 @@ def login_status(client,expected,start=False):
         if _flow is None and FLOW_FILE.exists():_flow=QRFlow.restore()
         if start:
             _flow=QRFlow()
-            return {'status':'waiting','message':'请用飞书扫码并在手机上确认登录','qr':_flow.qr}
+            return _flow.waiting_result()
         if _flow is None:
             try:
                 identity=client.identity()

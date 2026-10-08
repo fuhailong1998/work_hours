@@ -1,5 +1,6 @@
 # Build on the target OS/architecture. Only public static assets are bundled.
 from pathlib import Path
+import sys
 root = Path(SPECPATH)
 a = Analysis(
     [str(root / 'server.py')], pathex=[str(root)],
@@ -8,7 +9,7 @@ a = Analysis(
            (str(root / 'web' / 'favicon.svg'), 'web'),
            (str(root / 'web' / 'static'), 'web/static'),
            (str(root / 'data' / 'holidays'), 'data/holidays')],
-    hiddenimports=['PIL.Image', 'PIL.PngImagePlugin'],
+    hiddenimports=['PIL.Image', 'PIL.PngImagePlugin'] + (['tzdata'] if sys.platform == 'win32' else []),
     excludes=['playwright', 'selenium', 'tkinter', 'pytest'],
     noarchive=False,
 )

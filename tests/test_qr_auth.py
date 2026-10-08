@@ -86,6 +86,19 @@ class QRAuthTests(unittest.TestCase):
             self.assertEqual(restored.step,flow.step)
             self.assertEqual(restored.http.cookies.get('test'),'value')
 
+    def test_polling_and_restart_preserve_qr_expiry(self):
+        with tempfile.TemporaryDirectory() as directory, patch('oa_auth_api.FLOW_FILE',Path(directory)/'flow.json'):
+            flow=self.flow({'next_step':'qr_login_polling','step_info':{'status':1}})
+            flow.http=requests.Session()
+            flow.qr_expires_at=1800000000000
+            for _ in range(2):
+                result=flow.poll(Mock(),None)
+                self.assertEqual(result['qr_expires_at'],1800000000000)
+                self.assertFalse(result['scanned'])
+            QRFlow.persist(flow)
+            restored=QRFlow.restore()
+            self.assertEqual(restored.waiting_result()['qr_expires_at'],1800000000000)
+
     @patch('oa_auth_api.follow')
     def test_expired_sso_state_reuses_scanned_session(self,follow_mock):
         flow=self.flow({});flow.step={'next_step':'enter_app'}
@@ -108,7 +121,10 @@ class QRAuthTests(unittest.TestCase):
 
     def test_scanned_pending_keeps_qr_active(self):
         flow=self.flow({'next_step':'qr_login_polling','step_info':{'status':2}})
-        self.assertEqual(flow.poll(Mock(),{'id':'1','name':'Test'})['status'],'waiting')
+        result=flow.poll(Mock(),{'id':'1','name':'Test'})
+        self.assertEqual(result['status'],'waiting')
+        self.assertTrue(result['scanned'])
+        self.assertEqual(result['message'],'已扫码，请在手机上确认登录')
 
     def test_expired_qr_does_not_claim_authentication(self):
         flow=self.flow({'next_step':'qr_login_polling','step_info':{'status':5}})

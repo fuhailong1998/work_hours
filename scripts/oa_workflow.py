@@ -8,7 +8,10 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from urllib.parse import parse_qs, urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 NAME = "非常规工时调整流程"
 CODE = "B598FA51-FC3B-4854-BF10-DE9EE4528D1F"

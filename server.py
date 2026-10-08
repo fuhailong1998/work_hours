@@ -6,20 +6,19 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
-from pathlib import Path
+import sys
 import threading
 import time
+import traceback
 from urllib.parse import urlsplit
 
-from query_hours import query_report, OAAuthRequired
+from query_hours import query_report
 from oa_draft import create_draft
-from oa_session import get_session, login_status
+from oa_session import get_session, login_status, OAAuthRequired
 from oa_auth_api import clear_login
 from oa_saved import saved_adjustments
 from oa_form_api import OAForm, value
-from work_calendar import annotate_calendar
-from oa_http import get_session
+from work_calendar import annotate_calendar, available_years
 
 from app_paths import RESOURCE_ROOT as ROOT, DATA_ROOT
 
@@ -37,18 +36,24 @@ def draft_progress(message):
         DRAFT_PROGRESS["message"] = message
 
 
-DEFAULT_PROFILE = {"id":"", "name":"未登录", "employee_code":"", "department":"", "public_project":""}
+DEFAULT_PUBLIC_PROJECT = "OS_AIOS_2026"
+DEFAULT_PROFILE = {"id":"", "name":"未登录", "employee_code":"", "department":"", "public_project":DEFAULT_PUBLIC_PROJECT, "public_project_confirmed":False}
 
 
 
 def load(path, default):
-    return json.loads(path.read_text()) if path.exists() else default
+    result = json.loads(path.read_text(encoding='utf-8')) if path.exists() else default
+    if default is DEFAULT_PROFILE:
+        result = {**DEFAULT_PROFILE, **result}
+        if not result.get("public_project"):
+            result["public_project"] = DEFAULT_PUBLIC_PROJECT
+    return result
 
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding='utf-8')
     temp.chmod(0o600)
     temp.replace(path)
 
@@ -86,6 +91,22 @@ def store_employee(employee):
         write_json(directory/'profile.json',profile)
         write_json(PROFILE_FILE,profile)
         return profile
+
+
+def save_public_project(public):
+    if not isinstance(public, str):
+        raise ValueError("请填写有效的个人公共工时项目名称")
+    public = public.strip()
+    if not public or len(public) > 180:
+        raise ValueError("请填写有效的个人公共工时项目名称")
+    with LOCK:
+        profile = dict(load(PROFILE_FILE, DEFAULT_PROFILE), public_project=public,
+                       public_project_confirmed=True)
+        if not profile["id"]:
+            raise OAAuthRequired("请先扫码登录 OA")
+        write_json(PROFILE_FILE, profile)
+        write_json(LOCAL / 'employees' / profile['id'] / 'profile.json', profile)
+    return profile
 
 
 def deactivate_employee():
@@ -152,7 +173,7 @@ def make_draft(body, client):
             raise
     finally:
         with LOCK:
-            DRAFT_PROGRESS["active"] = False
+            DRAFT_PROGRESS.update(message="", started=0, active=False)
         DRAFT_LOCK.release()
 
 
@@ -166,11 +187,12 @@ def validate_plan(body, report, profile):
         raise ValueError('请至少选择一个有效的调出项目')
     sources=sorted(set(x.strip() for x in sources))
     source=sources[0] if len(sources)==1 else ''
-    target = str(body.get("target_project", "")).strip()
     reason = str(body.get("reason", "")).strip()
     if not reason or len(reason) > 4000:
         raise ValueError("请填写申请原因（不超过 4000 字）")
     selected = body.get("rows", [])
+    # 3670 = 366 days * 10 target projects, the widest plan a one-year query can
+    # produce. It bounds request size; OA's own detail limit still applies.
     if not isinstance(selected, list) or not selected or len(selected) > 3670:
         raise ValueError("请至少选择一天调出项目工时")
     balances={}
@@ -191,26 +213,26 @@ def validate_plan(body, report, profile):
         if not isinstance(row, dict):
             raise ValueError("调整明细格式错误")
         day = row.get("date")
-        target = str(row.get("target_project", body.get("target_project", ""))).strip()
-        if not target or len(target) > 180 or target in sources:
+        row_target = str(row.get("target_project", body.get("target_project", ""))).strip()
+        if not row_target or len(row_target) > 180 or row_target in sources:
             raise ValueError("请选择不同于调出项目的目标项目")
         try:
             hours = Decimal(str(row.get("hours")))
         except InvalidOperation:
             raise ValueError("工时必须是有效数字") from None
-        if (day, target) in seen or day not in available:
+        if (day, row_target) in seen or day not in available:
             raise ValueError("存在重复的日期与调入项目，或非调出项目工时日期")
         if not hours.is_finite() or hours <= 0 or hours > available[day]:
             raise ValueError(f"{day} 调整量须大于 0 且不超过该日调出项目工时")
         if hours.as_tuple().exponent < -2:
             raise ValueError("工时最多保留两位小数；OA 支持的精度仍需填写时核实")
-        seen.add((day, target))
+        seen.add((day, row_target))
         daily_totals[day] = daily_totals.get(day, Decimal(0)) + hours
         if daily_totals[day] > available[day]:
             raise ValueError(f"{day} 各项目分配合计不能超过当天调出项目工时")
         total += hours
         adjustments.append({"date": day, "hours": str(hours),
-                            "source_project": source, "target_project": target})
+                            "source_project": source, "target_project": row_target})
     adjustments.sort(key=lambda r: (r["date"], r["target_project"]))
     withdrawals=[]
     for day,amount in sorted(daily_totals.items()):
@@ -363,14 +385,7 @@ class Handler(SimpleHTTPRequestHandler):
                 finally:
                     QUERY_LOCK.release()
             elif path == "/api/profile":
-                public = str(body.get("public_project", "")).strip()
-                if not public or len(public) > 180:
-                    raise ValueError("请填写有效的个人公共工时项目名称")
-                with LOCK:
-                    profile = dict(load(PROFILE_FILE, DEFAULT_PROFILE), public_project=public)
-                    if not profile["id"]:raise OAAuthRequired("请先扫码登录 OA")
-                    write_json(PROFILE_FILE, profile)
-                self.respond({"profile": profile})
+                self.respond({"profile": save_public_project(body.get("public_project", ""))})
             elif path == "/api/preview":
                 with LOCK:
                     preview = validate_plan(body, load(REPORT_FILE, None), load(PROFILE_FILE, DEFAULT_PROFILE))
@@ -384,6 +399,9 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, KeyError, TypeError) as error:
             self.respond({"error": str(error)}, 400)
         except Exception:
+            # The client only ever sees a generic message; keep the cause on the
+            # terminal so a failing OA call can be diagnosed without a rerun.
+            traceback.print_exc(file=sys.stderr)
             self.respond({"error": "暂时无法连接 OA，请重试；若工作台尚未登录，请使用页面内的扫码登录。", "code": "oa_connection_error"}, 502)
 
 
@@ -398,7 +416,13 @@ if __name__ == "__main__":
     except OSError:
         parser.exit(1, f"无法启动：端口 {args.port} 不可用。请关闭已运行的工作台，或使用 --port 指定其他端口。\n")
     print(f"工时工作台已启动：http://127.0.0.1:{args.port}/", flush=True)
-    print(f"个人数据目录：{DATA_ROOT}\n按 Ctrl+C 停止服务。", flush=True)
+    print(f"个人数据目录：{DATA_ROOT}", flush=True)
+    years = available_years()
+    if years:
+        print(f"工作日历覆盖 {years[0]}–{years[-1]} 年；之后的年份不标记缺填工时，需补充 data/holidays/<年份>.json。", flush=True)
+    else:
+        print("未找到工作日历数据，缺填工时不会标记。", flush=True)
+    print("按 Ctrl+C 停止服务。", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

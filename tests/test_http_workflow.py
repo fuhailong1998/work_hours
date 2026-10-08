@@ -9,7 +9,6 @@ from unittest.mock import Mock, patch
 from oa_http import OASession, OAAuthRequired
 from oa_rules import apply_save_rules
 from query_hours import query_report
-from oa_draft import verify_saved
 
 
 class HTTPWorkflowTests(unittest.TestCase):
