@@ -3,9 +3,11 @@
 import argparse
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import errno
 import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
+import socket
 import sys
 import threading
 import time
@@ -405,17 +407,45 @@ class Handler(SimpleHTTPRequestHandler):
             self.respond({"error": "暂时无法连接 OA，请重试；若工作台尚未登录，请使用页面内的扫码登录。", "code": "oa_connection_error"}, 502)
 
 
+class WorkbenchHTTPServer(ThreadingHTTPServer):
+    # Windows SO_REUSEADDR can allow two servers to bind the same port.
+    allow_reuse_address = sys.platform != "win32"
+    allow_reuse_port = False
+
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def create_local_server(start_port):
+    """Bind directly, retrying occupied ports without a separate availability check."""
+    for port in range(start_port, 65536):
+        try:
+            return WorkbenchHTTPServer(("127.0.0.1", port), Handler)
+        except OSError as error:
+            occupied = error.errno == errno.EADDRINUSE
+            if sys.platform == "win32":
+                # Windows also uses access denied for exclusive/reserved ports.
+                occupied |= error.errno in (10013, 10048) or getattr(error, "winerror", None) in (10013, 10048)
+            if not occupied:
+                raise
+    raise OSError(errno.EADDRINUSE, f"端口 {start_port}–65535 均不可用")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=18767)
+    parser.add_argument("--port", type=int, default=18767, help="起始端口（默认 18767），占用时自动加 1 重试")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("端口必须在 1–65535 之间")
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    except OSError:
-        parser.exit(1, f"无法启动：端口 {args.port} 不可用。请关闭已运行的工作台，或使用 --port 指定其他端口。\n")
-    print(f"工时工作台已启动：http://127.0.0.1:{args.port}/", flush=True)
+        server = create_local_server(args.port)
+    except OSError as error:
+        parser.exit(1, f"无法启动：{error}\n")
+    if server.server_port != args.port:
+        print(f"端口 {args.port} 不可用，已自动使用 {server.server_port}。", flush=True)
+    print(f"工时工作台已启动：http://127.0.0.1:{server.server_port}/", flush=True)
     print(f"个人数据目录：{DATA_ROOT}", flush=True)
     years = available_years()
     if years:

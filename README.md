@@ -16,7 +16,7 @@ chmod +x work_hours
 ./work_hours
 ```
 
-启动后保持终端窗口开启，用 Chrome、Edge 等浏览器打开 `http://127.0.0.1:18767/`，再用自己的飞书扫码。停止程序按 Ctrl+C。端口已占用时，Windows 可执行 `.\work_hours.exe --port 18768`，Linux 执行 `./work_hours --port 18768`。
+启动后保持终端窗口开启，用 Chrome、Edge 等浏览器打开终端显示的地址，再用自己的飞书扫码。默认从 `http://127.0.0.1:18767/` 启动；端口被占用时自动依次尝试 18768、18769……，直到找到可用端口。停止程序按 Ctrl+C。可通过 `--port 18768` 指定起始端口，同样支持自动递增。
 
 安装包只包含程序、网页和节假日数据，不包含打包者的账号、会话、工时或草稿。Windows 个人数据默认保存至 `%LOCALAPPDATA%\work_hours\`，Linux 保存至 `~/.local/share/work_hours/`（遵循 `XDG_DATA_HOME`）。升级时替换可执行文件即可；也可用 `WORK_HOURS_DATA_DIR` 指定数据目录。每个人使用独立副本和自己的账号，仍需能访问公司 OA 网络。
 
@@ -31,7 +31,7 @@ python3 -m pip install -r requirements.txt
 python3 server.py
 ```
 
-打开 http://127.0.0.1:18767/ 。运行时仅使用 HTTP 接口，无需 Chrome、Playwright、CDP 或远程调试端口。需要访问公司 OA 的网络环境；HTTP 客户端遵循 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 配置，不能在需要代理的环境中禁用代理。
+打开终端显示的地址（默认 http://127.0.0.1:18767/ ，端口占用时自动递增）。运行时仅使用 HTTP 接口，无需 Chrome、Playwright、CDP 或远程调试端口。需要访问公司 OA 的网络环境；HTTP 客户端遵循 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 配置，不能在需要代理的环境中禁用代理。
 
 网页首次打开会查询当前自然月份的工时周期。周期为上月 25 日至本月 24 日：9 月 29 日默认查询九月周期（8 月 25 日至 9 月 24 日）。页面顶部可直接选择历史月份、切换前后周期、回到本月或自定义日期；选择月份后自动查询。
 
